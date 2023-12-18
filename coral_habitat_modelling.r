@@ -10,6 +10,15 @@ library(snakecase)
 
 source("machine_learning_functions.r")
 
+library(parallel)
+library(parallelsugar)
+
+mclapply <- switch( Sys.info()[['sysname']],
+                    Windows = {mclapply_socket},
+                    Linux   = {mclapply},
+                    Darwin  = {mclapply})
+
+
 # Directories and files
 in_dir.data <- "C:/Users/MQ43846173/Dropbox/Lenfest_kenya/data/"
 
@@ -19,14 +28,30 @@ in_file.coral <- 'WIO_coral_cover_plus_variables_aggregated.csv'
 in_file.coral_raw <- 'WIO_coral_cover_plus_variables_raw.csv'
 
 
-
-
-
 out_dir <- "output/"
+out_dir_extra <- '1_rep_kenya/'
+
+# Filtering
+data_filter <- function(data) {
+  data %>%
+    filter(no_replicates == 1) %>%
+    # filter(Country == "Tanzania") %>%
+    filter(Country == "Kenya") %>%
+    return()
+}
+
+
+data_filter.pu <- function(data) {
+  data %>%
+    # filter(Country == "Tanzania") %>%
+    filter(Country == "Kenya") %>%
+    return()
+}
 
 
 # Constants
 response_var <- 'Number_of_genera' #"Coralcover.prop" 
+response_var <- 'Coralcover.prop'
 response_var_out <- to_snake_case(response_var)
 
 
@@ -84,14 +109,14 @@ features <- c(
   # Human variables
   
   # "Management",            # Fisheries management level
-
+  
   "mean.npp",              # Primary productivity, from where?
   "TT_market_hrs",         # Travel time to market
   "TT_pop_hrs",            # Travel time to nearest population
- 
+  
   "Grav_NP",               # Gravity to nearest population
   "Grav_NC",               # Gravity to nearest city or market
-
+  
   
   # Connectivity
   
@@ -100,7 +125,7 @@ features <- c(
   "Outdegree",
   "Retention"
   
-  )
+)
 
 features.one_hot <- c("Management",
                       "Habitat")
@@ -120,6 +145,11 @@ train_watchlist_split_val <- 0.2
 
 
 # Main ==== 
+# ..... Create directories
+out_dir <- paste0(out_dir,response_var_out,'/',out_dir_extra)
+
+if(!dir.exists(out_dir)) { dir.create(out_dir, recursive = T,) }
+
 
 # ..... Secondary constants
 actual_var <- paste0(response_var,'.actual')
@@ -172,147 +202,20 @@ data.coral_raw <- data.coral_raw %>%
 model_data <- data.coral
 
 model_data <- model_data %>%
-  filter(no_replicates == 1) %>%
-  # filter(Country == "Tanzania") %>%
-  # filter(Country == "Kenya") %>%
+  data_filter() %>%
   return()
 
 
 model_data <- model_data[complete.cases(model_data), ]
 
 
-data.coral_raw <- data.coral_raw 
-
-
-# ######### TESTING CUSTOM OBJECTIVE FUNCTIONS
-# 
-# library(betareg)
-# 
-# 
-# custom_obj_beta_regression <- function(preds, dtrain) {
-#   labels <- getinfo(dtrain, "label")
-#   
-#   # Ensure predictions are within the (0, 1) range
-#   preds <- pnorm(preds)
-#   
-#   # Initial values for alpha and beta
-#   alpha.init <- 300
-#   beta.init <- 300
-#   
-#   # Define a likelihood function that depends on alpha and beta
-#   likelihood <- function(par) {
-#     alpha <- par[1]
-#     beta <- par[2]
-#     
-#     log_lik <- lbeta(alpha * preds, beta * (1 - preds)) - lbeta(alpha, beta)
-#     return(-sum(log_lik))
-#   }
-#   
-#   # Perform optimization to estimate alpha and beta
-#   optim_result <- optim(par = c(alpha.init, beta.init),
-#                         fn = likelihood, 
-#                         method = "BFGS")
-#   
-#   # Retrieve the estimated alpha and beta values
-#   alpha <- optim_result$par[1]
-#   beta <- optim_result$par[2]
-#   
-#   # beta_model <- betareg(labels ~ 1|1)
-#   # 
-#   # # Extract the estimated parameters
-#   # alpha <- coef(beta_model)[1]
-#   # beta <- coef(beta_model)[2]
-# 
-# 
-#   grad <- ((alpha - 1) / preds - (beta - 1) / (1 - preds)) / 
-#     (alpha * beta * (alpha + beta - 1))
-#   
-#   hess <- -((alpha - 1) / preds^2 + (beta - 1) / (1 - preds)^2) / 
-#     (alpha * beta * (alpha + beta - 1))
-#   
-#   return(list(grad = grad, hess = hess))
-# }
-# 
-# custom_obj_beta_regression(preds = preds, 
-#                            dtrain = xgb_model$model_matrices.xgb$train)
-# 
-# 
-# beta_reg_eval <- function(preds, dtrain) {
-#   labels <- getinfo(dtrain, "label")
-# 
-#   # Ensure predictions are within the (0, 1) range
-#   preds <- pnorm(preds)
-#   
-#   # Initial values for alpha and beta
-#   alpha.init <- 2
-#   beta.init <- 30
-#   
-#   # Define a likelihood function that depends on alpha and beta
-#   likelihood <- function(par) {
-#    
-#     alpha = par[1]
-#     beta = par[2]
-#     
-#     log_lik <- lbeta(alpha * preds, beta * (1 - preds)) - lbeta(alpha, beta)
-#     return(-sum(log_lik))
-#   }
-#   
-#   # Perform optimization to estimate alpha and beta
-#   optim_result <- optim(par = c(alpha.init, beta.init), 
-#                         fn = likelihood, 
-#                         method = "BFGS")
-#   
-#   # Retrieve the estimated alpha and beta values
-#   alpha <- optim_result$par[1]
-#   beta <- optim_result$par[2]
-#   
-#   mean_pred <- mean(preds)
-#   var_pred <- preds * (1 - preds)
-#   
-#   err <- beta_loss(labels, mean_pred, alpha, beta)
-#   
-#   return(list(metric = "beta_error", value = err))
-# }
-# 
-# beta_reg_eval(preds = preds, dtrain = xgb_model$model_matrices.xgb$train)
-# 
-# 
-# # Custom beta loss function
-# beta_loss <- function(y, mu, alpha, beta) {
-#   n <- length(y)
-#   log_lik <- lbeta(alpha * mu, beta * (1 - mu)) - lbeta(alpha, beta)
-#   return(-sum(log_lik) / n)
-# }
-# 
-# 
-# custom_obj_probit <- function(preds, dtrain) {
-#   labels <- getinfo(dtrain, "label")
-#   
-#   # Apply the probit link function
-#   pred_prob <- pnorm(preds)
-#   
-#   # Calculate the gradient and hessian for the Probit link
-#   grad <- -dnorm(preds) / (labels + (1 - labels) * (1 - pred_prob))
-#   hess <- dnorm(preds) * (1 - 2 * labels) / (labels * (1 - labels) * (1 - pred_prob)^2)
-#   
-#   return(list(grad = grad, hess = hess))
-# }
-# 
-# 
-# 
-# 
-# ggplot(model_data,
-#        aes(x = get(response_var))) + 
-#   
-#   geom_density() +
-#   
-#   theme_minimal()
-
-
-
+pu_data <- data.coral_raw %>%
+  data_filter.pu() %>%
+  return()
 
 
 # ..... Single model run ====
+
 xgb_model <- 
   xgboost_model_training_wrapper(input_data = model_data,
                                  response_var = response_var,
@@ -341,7 +244,7 @@ xgb_model <-
                                  # global_objective = custom_obj_beta_regression,
                                  # global_eval_metric = 'logloss',
                                  # maximize = TRUE,
-
+                                 
                                  linear_lambda_bias = NULL,
                                  
                                  training_rounds = 20000,
@@ -356,11 +259,6 @@ xgb_model.predictions <- predict(object = xgb_model$xgboost_model,
 
 dnorm(xgb_model.predictions)
 
-
-
-actual_var <- paste0(response_var,'.actual')
-predict_var <- paste0(response_var,'.predicted')
-
 xgb_model.predictions <- tibble(!!predict_var := xgb_model.predictions) %>%
   bind_cols(xgb_model$xgb_data_list$test[,c(response_var, replicate_unit_var, id_vars)]) %>%
   rename(!!actual_var := response_var)
@@ -372,13 +270,10 @@ xgb_model.predictions <- xgb_model.predictions %>%
          error.abs.pc = abs(error.pc))
 
 
-
-
-
 # ..... Multiple runs ====
+# .......... Run models ====
 
-
-xgb_models <- lapply(1:n_runs, function(x) {
+xgb_models <- mclapply(1:n_runs, function(x) {
   
   print(paste0("running model ",x," of ", n_runs))
   
@@ -406,7 +301,7 @@ xgb_models <- lapply(1:n_runs, function(x) {
                                    tree_num_parallel_tree = 3,
                                    
                                    
-                                  
+                                   
                                    # xgb_booster = 'gbtree',
                                    # global_objective = custom_obj_beta_regression,
                                    # global_eval_metric = 'logloss',
@@ -416,7 +311,7 @@ xgb_models <- lapply(1:n_runs, function(x) {
                                    training_rounds = 20000,
                                    early_stopping_rounds = 50,
                                    print_progress = T
-                                   )
+    )
   
   
   predictions <- predict(object = xgb_model$xgboost_model,
@@ -442,16 +337,125 @@ xgb_models <- lapply(1:n_runs, function(x) {
   
   xgb_model[['predictions']] <- predictions
   
+  shaps_x <- get_shap_values.xgboost(trained_xgb_model_object = xgb_model,
+                                     response_var = response_var,
+                                     predinteraction = F,
+                                     problem_class = 'regression')
+  shaps_x <- shaps_x %>% mutate(run = x)
+  
+  
+  xgb_model[['shap_values']] <- shaps_x
+  
   xgb_model
   
-})
+}, mc.cores = 4)
 
 
+
+# .......... Model performance ====
 
 xgb_models.predictions <- lapply(1:n_runs, function(x) {
   xgb_models[[x]]$predictions
-  }) %>% bind_rows() 
+}) %>% bind_rows() 
+
+
+model_runs.performance.summary <- xgb_models.predictions %>%
+  #pivot_longer(cols = c('accuracy', 'confidence'), names_to = 'metric') %>%
+  group_by(across(c('run', 'Country'))) %>%
+  summarise(error.mean = mean(error),
+            error.sd = sd(error),
+            error_abs.mean = mean(error.abs),
+            mean_only_error = mean(error_mean),
+            mean_only_error.abs = mean(error_mean.abs)
+            # confidence.mean = mean(confidence),
+            # confidence.sd = sd(confidence)
+  )
+
+
+model_runs.performance.summary.mean_only_models <- model_runs.performance.summary %>%
+  group_by(Country) %>%
+  summarise(mean_only_error = mean(mean_only_error),
+            mean_only_error.abs = mean(mean_only_error.abs),
+            median_only_error = median(mean_only_error),
+            median_only_error.abs = median(mean_only_error.abs))
+
+
+model_runs.performance.country_error <- model_runs.performance.summary %>%
+  group_by(Country) %>%
+  summarise(model_error_rate.country = mean(mean_only_error.abs))
+
+
+# .......... SHAP values ====
+
+shap_values <- lapply(1:4, function(x) {
   
+  out <- xgb_models[[x]]$shap_values
+
+  out
+  
+}) %>% bind_rows() 
+
+
+shap_values.long <- shap_values %>%
+  pivot_longer(cols = features,
+               names_to = 'feature',
+               values_to = 'shap') %>%
+  mutate(shap_abs = abs(shap)) %>%
+  arrange(-shap_abs)
+
+
+
+# .......... Predict to PUs ====
+
+
+pu_data.xgb_matrix <- convert_data_to_xgb_matrix(xgb_data_list = list(pu_data),
+                                                 features = features,
+                                                 response_var = response_var,
+                                                 response_type = response_type) %>%
+  .[[1]]
+
+
+pu_predictions <- lapply(1:n_runs, function(x) {
+  
+  model_x <- xgb_models[[x]]$xgboost_model
+  data_x <- xgb_models[[x]]$xgb_data_list$train
+  preds_x <- predict(object = model_x, 
+                     data = data_x,
+                     newdata = pu_data.xgb_matrix)
+  
+  out <- tibble(!!predict_var := preds_x,
+                model_run = x) %>%
+    bind_cols(pu_data)
+  
+  out
+  
+}) %>% bind_rows()
+
+
+pu_preds.aggregated <- pu_predictions %>%
+  group_by(across(any_of(c(id_vars)))) %>%
+  summarise(!!paste0(predict_var,'.mean') := mean(get(predict_var)),
+            !!paste0(predict_var,'.sd') := sd(get(predict_var)),
+            !!paste0(predict_var,'.GAM') := mean(Coralcover.prop),
+            !!paste0(predict_var,'.GAM_sd_check') := sd(Coralcover.prop)
+  ) %>%
+  ungroup() %>%
+  left_join(model_runs.performance.country_error) %>%
+  mutate(xgb_vs_gam_diff = get(paste0(predict_var,'.mean')) - get(paste0(predict_var,'.GAM'))) %>%
+  mutate(PU_lat = as.numeric(PU_lat),
+         PU_lon = as.numeric(PU_lon))
+
+
+pu_preds_pivot_vars <- c(paste0(predict_var,'.mean'),
+                         paste0(predict_var,'.sd'),
+                         'model_error_rate.country')
+
+pu_preds.aggregated
+
+
+
+# ..... Results and plots ====
+# .......... Model performance summary - scatter ====
 
 plot <- ggplot(data = xgb_models.predictions,
                aes(x = get(predict_var), y = get(actual_var))) +
@@ -481,36 +485,15 @@ plot <- ggplot(data = xgb_models.predictions,
 
 plot
 
+ggsave(filename = paste0(out_dir,'model_performance_tree_booster_1_rep_only_',response_var_out,'_scatter.png'),
+       plot = plot,
+       width = 1200,
+       height = 1080,
+       scale = 3,
+       units = 'px')
 
 
-model_runs.performance.summary <- xgb_models.predictions %>%
-  #pivot_longer(cols = c('accuracy', 'confidence'), names_to = 'metric') %>%
-  group_by(across(c('run', 'Country'))) %>%
-  summarise(error.mean = mean(error),
-            error.sd = sd(error),
-            error_abs.mean = mean(error.abs),
-            mean_only_error = mean(error_mean),
-            mean_only_error.abs = mean(error_mean.abs)
-            # confidence.mean = mean(confidence),
-            # confidence.sd = sd(confidence)
-            )
-
-
-
-
-model_runs.performance.summary.mean_only_models <- model_runs.performance.summary %>%
-  group_by(Country) %>%
-  summarise(mean_only_error = mean(mean_only_error),
-            mean_only_error.abs = mean(mean_only_error.abs),
-            median_only_error = median(mean_only_error),
-            median_only_error.abs = median(mean_only_error.abs))
-
-model_runs.performance.country_error <- model_runs.performance.summary %>%
-  group_by(Country) %>%
-  summarise(model_error_rate.country = mean(mean_only_error.abs))
-
-
-
+# .......... Model performance summary - boxplot ====
 
 plot <- ggplot(data = model_runs.performance.summary,
                aes(x = '', y =  error_abs.mean, colour = Country)) +
@@ -557,7 +540,7 @@ plot <- ggplot(data = model_runs.performance.summary,
 
 plot
 
-ggsave(filename = paste0(out_dir,'model_performance_tree_booster_1_rep_only_',response_var_out,'.png'),
+ggsave(filename = paste0(out_dir,'model_performance_tree_booster_1_rep_only_',response_var_out,'boxplot.png'),
        plot = plot,
        width = 1200,
        height = 1080,
@@ -565,59 +548,7 @@ ggsave(filename = paste0(out_dir,'model_performance_tree_booster_1_rep_only_',re
        units = 'px')
 
 
-
-# ..... Predict to PUs ====
-
-
-data.coral_raw.xgb_matrix <- convert_data_to_xgb_matrix(xgb_data_list = list(data.coral_raw),
-                                                        features = features,
-                                                        response_var = response_var,
-                                                        response_type = response_type) %>%
-  .[[1]]
-
-
-
-
-pu_predictions <- lapply(1:n_runs, function(x) {
-  
-  model_x <- xgb_models[[x]]$xgboost_model
-  data_x <- xgb_models[[x]]$xgb_data_list$train
-  preds_x <- predict(object = model_x, 
-                     data = data_x,
-                     newdata = data.coral_raw.xgb_matrix)
-  
-  out <- tibble(!!predict_var := preds_x,
-                model_run = x) %>%
-    bind_cols(data.coral_raw)
-  
-  out
-  
-}) %>% bind_rows()
-
-
-pu_preds.aggregated <- pu_predictions %>%
-  group_by(across(any_of(c(id_vars)))) %>%
-  summarise(!!paste0(predict_var,'.mean') := mean(get(predict_var)),
-            !!paste0(predict_var,'.sd') := sd(get(predict_var)),
-            # !!paste0(predict_var,'.GAM') := mean(Coralcover.prop),
-            # !!paste0(predict_var,'.GAM_sd_check') := sd(Coralcover.prop)
-            ) %>%
-  ungroup() %>%
-  left_join(model_runs.performance.country_error) %>%
-  # mutate(xgb_vs_gam_diff = get(paste0(predict_var,'.mean')) - get(paste0(predict_var,'.GAM'))) %>%
-  mutate(PU_lat = as.numeric(PU_lat),
-         PU_lon = as.numeric(PU_lon))
-            
-
-pu_preds_pivot_vars <- c(paste0(predict_var,'.mean'),
-                         paste0(predict_var,'.sd'),
-                         'model_error_rate.country')
-
-pu_preds.aggregated
-
-
-
-# ..... Predictions plots ====
+# ..........  PU predictions ====
 
 pu_preds.plot <- ggplot(data = pu_preds.aggregated %>% filter(Country == 'Kenya'),
                         mapping = aes(x = PU_lon, 
@@ -647,7 +578,7 @@ ggsave(filename = paste0(out_dir,'planning_units_predictions_kenya_',response_va
        units = 'px')
 
 
-
+# .......... PU predictions - Kenya ====
 
 pu_preds.plot <- ggplot(data = pu_preds.aggregated %>% filter(Country == 'Kenya'),
                         mapping = aes(x = PU_lon, 
@@ -680,7 +611,7 @@ ggsave(filename = paste0(out_dir,'planning_units_prediction_uncertainty_kenya_',
        units = 'px')
 
 
-
+# .......... Model error by country ====
 
 pu_preds.plot <- ggplot(data = pu_preds.aggregated,
                         mapping = aes(x = PU_lon, 
@@ -713,6 +644,7 @@ ggsave(filename = paste0(out_dir,'planning_units_model_error_by_country_',respon
        units = 'px')
 
 
+# ..........  XGBoost Vs GAM - difference map ====
 
 pu_preds.plot <- ggplot(data = pu_preds.aggregated,
                         mapping = aes(x = PU_lon, 
@@ -750,6 +682,8 @@ ggsave(filename = paste0(out_dir,'planning_units_model_xgb_vs_gam_diff_',respons
        units = 'px')
 
 
+# ..........  XGBoost Vs GAM - difference scatter ====
+
 pu_preds.plot <- ggplot(pu_preds.aggregated, 
                         aes(x = Coralcover.prop.predicted.GAM,
                             y = Coralcover.prop.predicted.mean,
@@ -763,8 +697,8 @@ pu_preds.plot <- ggplot(pu_preds.aggregated,
   geom_abline(intercept = 0, slope = 1, colour = 'darkgrey') +
   
   geom_smooth(method = 'lm')
-  
-  # coord_equal()
+
+# coord_equal()
 
 pu_preds.plot
 
@@ -776,6 +710,9 @@ ggsave(filename = paste0(out_dir,'planning_units_model_xgb_vs_gam_diff_scatter_'
        scale = 3,
        units = 'px')
 
+
+
+# ..........  PU predictions - GAM - Kenya ====
 
 pu_preds.plot <- ggplot(data = pu_preds.aggregated %>% filter(Country == 'Kenya'),
                         mapping = aes(x = PU_lon, 
@@ -805,6 +742,9 @@ ggsave(filename = paste0(out_dir,'planning_units_predictions_gam_kenya_',respons
        units = 'px')
 
 
+
+# ..........  PU predictions - GAM ====
+
 pu_preds.plot <- ggplot(data = pu_preds.aggregated,
                         mapping = aes(x = PU_lon, 
                                       y = PU_lat,
@@ -833,37 +773,35 @@ ggsave(filename = paste0(out_dir,'planning_units_predictions_gam_',response_var_
        units = 'px')
 
 
-pu_preds.plot <- ggplot(data = pu_preds.aggregated,
-                        mapping = aes(x = PU_lon, 
-                                      y = PU_lat,
-                                      colour = get(paste0(predict_var,'.mean')))) +
-  
-  geom_point(size = 2, alpha = 0.6) +
-  
-  coord_equal() +
-  
-  labs(colour = 'Mean predicted\ncoral cover\nXGBoost') +
-  
-  theme_bw() +
-  theme(axis.text.x = element_blank(),
-        axis.ticks.x = element_blank(),
-        axis.text.y = element_blank(),
-        axis.ticks.y = element_blank())
 
-pu_preds.plot
+# pu_preds.plot <- ggplot(data = pu_preds.aggregated,
+#                         mapping = aes(x = PU_lon, 
+#                                       y = PU_lat,
+#                                       colour = get(paste0(predict_var,'.mean')))) +
+#   
+#   geom_point(size = 2, alpha = 0.6) +
+#   
+#   coord_equal() +
+#   
+#   labs(colour = 'Mean predicted\ncoral cover\nXGBoost') +
+#   
+#   theme_bw() +
+#   theme(axis.text.x = element_blank(),
+#         axis.ticks.x = element_blank(),
+#         axis.text.y = element_blank(),
+#         axis.ticks.y = element_blank())
+# 
+# pu_preds.plot
+# 
+# 
+# ggsave(filename = paste0(out_dir,'planning_units_predictions_xgb_',response_var_out,'.png'),
+#        plot = pu_preds.plot,
+#        width = 1200,
+#        height = 1080,
+#        scale = 3,
+#        units = 'px')
 
-
-ggsave(filename = paste0(out_dir,'planning_units_predictions_xgb_',response_var_out,'.png'),
-       plot = pu_preds.plot,
-       width = 1200,
-       height = 1080,
-       scale = 3,
-       units = 'px')
-
-
-
-
-
+# ..........  XGBoost Vs GAM - difference map - Kenya ====
 
 pu_preds.plot <- ggplot(data = pu_preds.aggregated %>% filter(Country == 'Kenya'),
                         mapping = aes(x = PU_lon, 
@@ -901,56 +839,28 @@ ggsave(filename = paste0(out_dir,'planning_units_model_xgb_vs_gam_diff_kenya_',r
        units = 'px')
 
 
-
-
-
-# ..... SHAP values ====
-
-
-shap_values <- lapply(1:n_runs, function(x) {
-  
-  model_x <- xgb_models[[x]]
-  shaps_x <- get_shap_values.xgboost(trained_xgb_model_object = model_x,
-                                     response_var = response_var,
-                                     predinteraction = F,
-                                     problem_class = 'regression')
-  
-  out <- shaps_x %>%
-    mutate(model_run = x)
-  
-  out
-  
-  
-}) %>% bind_rows() 
-
-
-shap_values.long <- shap_values %>%
-  pivot_longer(cols = features,
-               names_to = 'feature',
-               values_to = 'shap') %>%
-  mutate(shap_abs = abs(shap)) %>%
-  arrange(-shap_abs)
-
-
-
+# ..........  Feuture importance ====
 
 shap_plot <- ggplot(data = shap_values.long %>% filter(data_type == 'train'),
-       aes(y = shap_abs, x = reorder(feature, -shap_abs))) +
+                    aes(y = shap_abs, x = reorder(feature, -shap_abs))) +
   
   geom_hline(yintercept = 0) +
   
-  geom_col(fill = '#008822') +
+  geom_bar(fill = '#008822', alpha = 0.6, size = 1.5,
+           stat = 'summary', fun = 'sum') +
+  
+  scale_y_continuous(expand = c(0, 0)) + 
   
   labs(x = 'feature') +
   
   theme_bw() +
   theme(# axis.text.x = element_blank(),
-        # axis.ticks.x = element_blank(),
-        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+    # axis.ticks.x = element_blank(),
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
     
-        axis.text.y = element_blank(),
-        axis.ticks.y = element_blank(),
-        panel.grid = element_blank())
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    panel.grid = element_blank())
 
 shap_plot
 
@@ -958,7 +868,7 @@ ggsave(filename = paste0(out_dir,'feature_importance_shap_values_',response_var_
        plot = shap_plot,
        width = 1900,
        height = 1080,
-       scale = 3,
+       scale = 1,
        units = 'px')
 
 
@@ -970,7 +880,7 @@ stop()
 # ..... Comparing coral datasets =====
 
 
-sites_plot <- ggplot(data = data.coral_raw,
+sites_plot <- ggplot(data = pu_data,
                      mapping = aes(x = PU_lon, y = PU_lat)) +
   
   geom_point() +
@@ -1137,4 +1047,132 @@ ggsave(filename = paste0(out_dir,'model_performance_both_aggregate_',response_va
        height = 500,
        scale = 3,
        units = 'px')
+
+
+
+
+# ..... Testing custom objective functions ====
+# 
+# library(betareg)
+# 
+# 
+# custom_obj_beta_regression <- function(preds, dtrain) {
+#   labels <- getinfo(dtrain, "label")
+#   
+#   # Ensure predictions are within the (0, 1) range
+#   preds <- pnorm(preds)
+#   
+#   # Initial values for alpha and beta
+#   alpha.init <- 300
+#   beta.init <- 300
+#   
+#   # Define a likelihood function that depends on alpha and beta
+#   likelihood <- function(par) {
+#     alpha <- par[1]
+#     beta <- par[2]
+#     
+#     log_lik <- lbeta(alpha * preds, beta * (1 - preds)) - lbeta(alpha, beta)
+#     return(-sum(log_lik))
+#   }
+#   
+#   # Perform optimization to estimate alpha and beta
+#   optim_result <- optim(par = c(alpha.init, beta.init),
+#                         fn = likelihood, 
+#                         method = "BFGS")
+#   
+#   # Retrieve the estimated alpha and beta values
+#   alpha <- optim_result$par[1]
+#   beta <- optim_result$par[2]
+#   
+#   # beta_model <- betareg(labels ~ 1|1)
+#   # 
+#   # # Extract the estimated parameters
+#   # alpha <- coef(beta_model)[1]
+#   # beta <- coef(beta_model)[2]
+# 
+# 
+#   grad <- ((alpha - 1) / preds - (beta - 1) / (1 - preds)) / 
+#     (alpha * beta * (alpha + beta - 1))
+#   
+#   hess <- -((alpha - 1) / preds^2 + (beta - 1) / (1 - preds)^2) / 
+#     (alpha * beta * (alpha + beta - 1))
+#   
+#   return(list(grad = grad, hess = hess))
+# }
+# 
+# custom_obj_beta_regression(preds = preds, 
+#                            dtrain = xgb_model$model_matrices.xgb$train)
+# 
+# 
+# beta_reg_eval <- function(preds, dtrain) {
+#   labels <- getinfo(dtrain, "label")
+# 
+#   # Ensure predictions are within the (0, 1) range
+#   preds <- pnorm(preds)
+#   
+#   # Initial values for alpha and beta
+#   alpha.init <- 2
+#   beta.init <- 30
+#   
+#   # Define a likelihood function that depends on alpha and beta
+#   likelihood <- function(par) {
+#    
+#     alpha = par[1]
+#     beta = par[2]
+#     
+#     log_lik <- lbeta(alpha * preds, beta * (1 - preds)) - lbeta(alpha, beta)
+#     return(-sum(log_lik))
+#   }
+#   
+#   # Perform optimization to estimate alpha and beta
+#   optim_result <- optim(par = c(alpha.init, beta.init), 
+#                         fn = likelihood, 
+#                         method = "BFGS")
+#   
+#   # Retrieve the estimated alpha and beta values
+#   alpha <- optim_result$par[1]
+#   beta <- optim_result$par[2]
+#   
+#   mean_pred <- mean(preds)
+#   var_pred <- preds * (1 - preds)
+#   
+#   err <- beta_loss(labels, mean_pred, alpha, beta)
+#   
+#   return(list(metric = "beta_error", value = err))
+# }
+# 
+# beta_reg_eval(preds = preds, dtrain = xgb_model$model_matrices.xgb$train)
+# 
+# 
+# # Custom beta loss function
+# beta_loss <- function(y, mu, alpha, beta) {
+#   n <- length(y)
+#   log_lik <- lbeta(alpha * mu, beta * (1 - mu)) - lbeta(alpha, beta)
+#   return(-sum(log_lik) / n)
+# }
+# 
+# 
+# custom_obj_probit <- function(preds, dtrain) {
+#   labels <- getinfo(dtrain, "label")
+#   
+#   # Apply the probit link function
+#   pred_prob <- pnorm(preds)
+#   
+#   # Calculate the gradient and hessian for the Probit link
+#   grad <- -dnorm(preds) / (labels + (1 - labels) * (1 - pred_prob))
+#   hess <- dnorm(preds) * (1 - 2 * labels) / (labels * (1 - labels) * (1 - pred_prob)^2)
+#   
+#   return(list(grad = grad, hess = hess))
+# }
+# 
+# 
+# 
+# 
+# ggplot(model_data,
+#        aes(x = get(response_var))) + 
+#   
+#   geom_density() +
+#   
+#   theme_minimal()
+
 
