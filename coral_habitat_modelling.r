@@ -28,7 +28,7 @@ in_file.coral <- 'WIO_coral_cover_plus_variables_aggregated.csv'
 in_file.coral_raw <- 'WIO_coral_cover_plus_variables_raw.csv'
 
 
-out_dir <- "output/"
+out_dir <- "output/coral/"
 out_dir_extra <- '1_rep_kenya/'
 
 # Filtering

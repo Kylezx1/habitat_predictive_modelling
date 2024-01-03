@@ -467,6 +467,7 @@ set_up_parameters.xgboost <- function(xgb_booster = c('gbtree','gblinear'),  # t
                                       global_objective = 'multi:softprob',  # the objective function, defines the problem class additional option, here multi-class and softmax with outputs as probabilities)
                                       global_base_score = 0.5,
                                       global_nthread = 12,
+                                      global_device = 'cuda',
                                       
                                       
                                       tree_eta = 0.3,  # the learning rate, default = 0.3
@@ -478,6 +479,7 @@ set_up_parameters.xgboost <- function(xgb_booster = c('gbtree','gblinear'),  # t
                                       tree_lambda = 1,
                                       tree_alpha = 0,
                                       tree_num_parallel_tree = 1,
+                                      tree_method = 'hist',
                                       
                                       linear_lambda = 0,
                                       linear_lambda_bias = 0,
@@ -487,7 +489,8 @@ set_up_parameters.xgboost <- function(xgb_booster = c('gbtree','gblinear'),  # t
   xgb_params_global <- list(booster = xgb_booster, 
                             eval_metric = global_eval_metric, 
                             objective =  global_objective,
-                            nthread = global_nthread)
+                            nthread = global_nthread,
+                            device = global_device)
   
   # Tree parameters
   xgb_params_tree <- list(num_class = xgb_num_class,
@@ -499,7 +502,8 @@ set_up_parameters.xgboost <- function(xgb_booster = c('gbtree','gblinear'),  # t
                           colsample_bytree = tree_colsample_bytree,
                           lambda = tree_lambda,
                           alplha = tree_alpha,
-                          tnum_parallel_tree = tree_num_parallel_tree)
+                          tnum_parallel_tree = tree_num_parallel_tree,
+                          tree_method = tree_method)
   
   # Linear parameters
   xgb_params_linear <- list(lambda = linear_lambda, lambda_bias = linear_lambda_bias, alpha = linear_alpha)
