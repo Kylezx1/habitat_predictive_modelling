@@ -1,14 +1,12 @@
-# XGBpoost functions
-
-# XRF prediction API
+# XGBoost and machine learning functions
 
 # Author: Kyle Zawada 2023
-# Contact: kyle.zawada@mq.edu,au OR kylezx1@gmail.com
+# Contact: kyle.zawada@mq.edu.au OR kylezx1@gmail.com
 # GitHub: kylezx1 
 
 
 # DESCRIPTION:
-# This API/set of functions allows the user to build and test predictive models
+# Set of functions allows the user to build and test predictive models
 
 # TODO: Add documentation to functions
 
@@ -21,9 +19,6 @@ library(caret)
 
 library(xgboost)
 
-library(neuralnet)
-library(geodist)
-
 library(grid)
 library(gridExtra)
 
@@ -35,7 +30,29 @@ library(openssl)
 # Functions ====
 # ..... Generic ====
 
-# Function to interleave colors
+apply_qa_assurance_to_dataframe <- function(dataframe, 
+                                            exception_cols = NULL,
+                                            clean_col_names = T)  {
+  
+  out <- dataframe %>%
+    mutate(across(-any_of(exception_cols), .fns = as.character)) %>%
+    mutate(across(-any_of(exception_cols), to_snake_case)) %>%
+    mutate(across(-any_of(exception_cols), .fns = ~str_replace(.x, pattern = '^[[:space:]]*$', replacement = '..missing'))) %>%
+    mutate(across(-any_of(exception_cols), .fns = ~ifelse(is.na(.x), '..missing', .x))) %>%
+    mutate(across(-any_of(exception_cols), .fns = ~ifelse(.x == '..missing', NA, .x))) %>%
+    mutate(across(-any_of(exception_cols), .fns = ~str_trim(.x)))
+  
+  if(clean_col_names) {
+    
+    names(out) <- names(out) %>% to_snake_case()
+    
+  }
+  
+  return(out)
+  
+}
+
+
 interleave_colors <- function(num_colors, num_splits,
                               begin = 0, end = 1) {
   library(viridis)
@@ -222,6 +239,7 @@ set_up_model_data <- function(input_data,
                               response_var,
                               features,
                               id_vars,
+                              features.one_hot = NA,
                               replicate_unit_var = 'sample_id',
                               train_test_split_type = 'partition',
                               train_watchlist_split_type = 'partition',
@@ -240,12 +258,60 @@ set_up_model_data <- function(input_data,
   
   
   # Filter data
-  model_data_2 <- input_data %>% dplyr::select(c(response_var, replicate_unit_var, id_vars, features) %>% na.omit())
+  model_data_2 <- input_data %>% 
+    dplyr::select(any_of(c(response_var, 
+                           replicate_unit_var, 
+                           id_vars, 
+                           features)) %>% 
+                    na.omit())
   
   
   # Convert response to factor 
   if(response_type[1] == 'classification') {
-    model_data_2 <- model_data_2 %>% mutate(across(response_var, factor))
+    model_data_2 <- model_data_2 %>% 
+      mutate(across(response_var, factor))
+  }
+  
+  
+  # One hot encode features
+  if(!is.na(features.one_hot[1])) {
+    
+    model_data_3 <- lapply(1:length(features.one_hot), function(x) {
+
+      feature <- features.one_hot[x]
+      
+      model_data_3 <- model_data_2 %>% 
+        select(any_of(c(id_vars, feature))) %>%
+        mutate(row_id = row_number()) %>%
+        mutate(PLACEHOLDER = 1) %>%
+        pivot_wider(names_from = feature,
+                    values_from = PLACEHOLDER,
+                    values_fill = 0,
+                    names_glue = "TEMP_{.name}"
+        )
+      
+      names(model_data_3) <- str_replace(names(model_data_3), 
+                                         pattern = 'TEMP',
+                                         replacement = feature)
+      
+      model_data_3
+      
+    }) %>% reduce(left_join)
+      
+    model_data_2 <- model_data_2 %>%
+      mutate(row_id = row_number()) %>%
+      select(-features.one_hot) %>%
+      left_join(model_data_3) %>%
+      select(-row_id)
+    
+    
+    features.one_hot.encoded <- model_data_2 %>%
+      select(matches(paste(features.one_hot, collapse = '|'))) %>%
+      names()
+    
+    features <- features[-which(features %in% features.one_hot)]
+    features <- c(features, features.one_hot.encoded)
+    
   }
   
   
@@ -291,6 +357,7 @@ set_up_model_data <- function(input_data,
   
   out <- lapply(out, ungroup)
   
+  out[['features']] <- features 
   
   # Print final dataset sizes
   if(print_dataset_sizes) { lapply(out, function(x) { x[[response_var]] %>% table()}) }
@@ -299,115 +366,6 @@ set_up_model_data <- function(input_data,
   return(out)
   
 }
-
-
-
-# ..... WrapperiseR ====
-
-filter_dots <- function(dots, function_x) {
-  passed <- names(dots)
-  out <- dots[which(passed %in% names(formals(function_x)))]
-  return(out)
-}
-
-
-function_with_dots <- function(function_x, dots) {
-  args <- filter_dots(dots, function_x)
-  out <-  do.call(what = function_x,
-                  args = args)
-  return(out)
-  
-}
-
-wrapperise_functions <- function(function_list,
-                                 target_outputs,
-                                 
-                                 print_arguments_bool = F,
-                                 
-                                 ...) {
-  
-  
-  # Print function list arguments if needed
-  if(print_arguments_bool) {
-    
-    all_args <- lapply(function_list, function(x) { f <- formals(x[[1]]) })
-    
-    print('printing and returning all arguments and defaults for functions in the wrapper.
-           Set "print_arguments_bool = F" to stop this behaviour')
-    print(all_args)
-    
-    return(all_args)
-    
-  }
-  
-  # Execute functions in sequence
-  t_start <- Sys.time()
-  dots <- as.list(match.call())
-  # dots <- alist(match.call())
-  dots <- dots[grepl("function_list|target_outputs|print_arguments_bool|\\.\\.\\.", names(dots)) == F]
-  
-  for(x in 1:length(function_list)) {
-    
-    run_x <- function_list[[x]]
-    
-    function_x <- run_x[[1]][[1]]
-    output_x <- run_x[[2]]
-    message_x <- run_x[[3]]
-    
-    print(message_x)
-    out <- function_with_dots(function_x = function_x %>% eval(),
-                              dots = dots)
-    
-    for(y in 1:length(output_x)) {
-      
-      output_x_y <- output_x[[y]]
-      
-      output_y <- output_x_y[1]
-      out_find_y <-  output_x_y[2]
-      
-      out_y <- paste0('out',out_find_y)
-      
-      eval(parse(text = "dots[[output_y]] <- eval(parse(text = out_y))"))
-      
-    }
-    
-    t_end <- Sys.time() - t_start
-    t_end %>% round(2) %>% print()
-    
-  }
-  
-  print('getting target outputs')
-  
-  out_dots <- lapply(target_outputs, function(x) dots[[x]])
-  names(out_dots) <- target_outputs
-  
-  t_end <- Sys.time() - t_start
-  t_end %>% round(2) %>% print()
-  
-  return(out_dots)
-  
-}
-
-
-generate_wrapper_function <- function(function_args_alist,
-                                      function_list,
-                                      target_outputs,
-                                      ...) {
-  
-  out <- wrapperise_functions
-  
-  formals(out) <- c(function_args_alist, formals(out))
-  
-  formals(out)$target_outputs <- target_outputs
-  formals(out)$function_list <- function_list
-  
-  
-  return(out)
-  
-}
-
-
-
 
 
 # ..... XGBoost library ====
@@ -423,12 +381,13 @@ generate_wrapper_function <- function(function_args_alist,
 create_xgb_matrix <- function(model_dataframe, 
                               features,
                               response_var, 
-                              response_type = c('classification', 'regression')) {
+                              response_type = c('classification', 'regression'),
+                              missing = NA) {
   
   if(nrow(model_dataframe) == 0) { return() }
   
   xgb_features <- model_dataframe %>% 
-    dplyr::select(all_of(features)) %>% 
+    dplyr::select(any_of(features)) %>% 
     as.matrix()
   
   xgb_labels <- model_dataframe %>% 
@@ -438,19 +397,20 @@ create_xgb_matrix <- function(model_dataframe,
   
   if(response_type[1] == 'classification') { xgb_labels <- as.numeric(factor(xgb_labels))-1 }
   
-  out <- xgb.DMatrix(data = xgb_features, label = xgb_labels)
+  out <- xgb.DMatrix(data = xgb_features, label = xgb_labels, missing = missing)
   
   return(out)
 }
 
 
-convert_data_to_xgb_matrix <- function(xgb_data_list, features, response_var, response_type = 'classification') {
+convert_data_to_xgb_matrix <- function(xgb_data_list, features, response_var, response_type = 'classification', missing = NA) {
   
   out <- lapply(xgb_data_list,  # for each thing in this list
                 create_xgb_matrix,  # do this
                 response_var = response_var,
                 response_type = response_type,
-                features = features)  # extra arguments to the above function
+                features = features,
+                missing = missing)  # extra arguments to the above function
   
   return(out)
   
@@ -862,58 +822,6 @@ plot_shap_values.shap_ditributions.classification <- function(shap_values.long,
 }
 
 
-
-# OLD SHAP Function
-# process_shap_values <- function(shap_values, categorical_features, train_data, keep_one_hot_bool = F, id_vars) {
-#   
-#   shap_values_2 <- one_hot_row_sums(shap_values[[1]], categorical_features)
-#   shap_dataframe_melted <- shap_values_2 %>% 
-#     as_tibble() %>% 
-#     mutate(row_id = row_number()) %>% 
-#     pivot_longer(cols = !matches(c('row_id', 'BIAS')), names_to = 'feature', values_to = 'SHAP')
-#   
-#   shap_summary <- shap_dataframe_melted %>% group_by(feature) %>% summarise(mean_SHAP = mean(SHAP), mean_absolute_SHAP = mean(abs(SHAP)))
-#   
-#   train_data_melted <- train_data %>% 
-#     mutate(row_id = row_number()) %>% 
-#     one_hot_decode(categorical_columns = categorical_features)
-#   
-#   if(!is.na(categorical_features)) {
-#     
-#     train_data_melted_categorical <- train_data_melted %>% 
-#       dplyr::select(all_of(categorical_features), 'row_id') %>% 
-#       pivot_longer(cols = !matches(c('row_id')), names_to = 'feature', values_to = 'value')
-#     
-#   }
-#   
-#   train_data_melted_continuous <- train_data_melted %>% 
-#     pivot_longer(cols = !matches(c('row_id', id_vars)), names_to = 'feature', values_to = 'value') %>%
-#     group_by(feature) %>%
-#     mutate(value_scaled = mean_scale(value))
-#   
-#   if(!is.na(categorical_features)) {
-#     
-#     shap_table_categorical <- shap_dataframe_melted %>% 
-#       right_join(train_data_melted_categorical, by = c('row_id', 'feature')) %>%
-#       left_join(shap_summary, by = 'feature')
-#     
-#   } else {
-#     
-#     shap_table_categorical <- tibble()
-#     
-#   }
-#   
-#   shap_table_continuous <- shap_dataframe_melted %>% 
-#     right_join(train_data_melted_continuous, by = c('row_id', 'feature')) %>%
-#     left_join(shap_summary, by = 'feature')
-#   
-#   out <- list('continuous_shap_table' = shap_table_continuous, 'categorical_shap_table' = shap_table_categorical)
-#   
-#   return(out)
-# 
-# }
-
-
 # .......... XGBoost model training wrapper ====
 # ............... Experimental version ====
 xgboost_model_training_wrapper <- 
@@ -923,6 +831,7 @@ xgboost_model_training_wrapper <-
                                                         id_vars=,
                                                         threshold=,
                                                         replicate_unit_var = replicate_unit_var,
+                                                        features.one_hot = NA,
                                                         train_test_split_type = 'partition',
                                                         train_watchlist_split_type = 'partition',
                                                         response_type = 'classification',
@@ -951,6 +860,7 @@ xgboost_model_training_wrapper <-
            id_vars = NA,
            features,
            response_type = c('classification', 'regression'),
+           features.one_hot,
            train_test_split_val = 0.2,
            train_watchlist_split_val = 0.3,
            
@@ -978,28 +888,19 @@ xgboost_model_training_wrapper <-
                    replicate_unit_var = replicate_unit_var,
                    id_vars = id_vars,
                    features = features,
+                   features.one_hot = features.one_hot,
                    response_type = response_type,
                    train_test_split_val = train_test_split_val,
                    train_watchlist_split_val = train_watchlist_split_val
     ),
     dots)
     
-    # append_output_to_dots <- function(function_x, dots, output_name) {
-    # 
-    #   output <- function_with_dots(function_x = function_x, dots = dots)
-    #   output <- list(output)
-    #   names(output) <- output_name
-    # 
-    #   out <- c(dots, output)
-    # 
-    # 
-    # }
-    
     t_start <- Sys.time()
     print('setting up model for xgboost')
     xgb_data_list <- function_with_dots(function_x = set_up_model_data, 
                                         dots = dots)
-    dots[['xgb_data_list']] <- xgb_data_list
+    dots[['xgb_data_list']] <- xgb_data_list[1:3]
+    dots[['features']] <- xgb_data_list$features
     
     
     print('generating xgboost matrices')
@@ -1380,127 +1281,6 @@ plot_power_analysis.summary <- function(power_analysis_summarised) {
               confidence = p2,
               both = both)
   
-  
-  return(out)
-  
-}
-
-
-
-# ..... Neural net library ====
-
-
-generate_nnet_formula <- function(response_var, features) {
-  
-  r <- paste(response_var, collapse = '+')
-  f <- paste(features, collapse = '+')
-  
-  out <- paste0(r,'~',f) %>% as.formula()
-  
-  return(out)
-  
-}
-
-
-generate_nnet_layer_topology <- function(n_features, 
-                                         hidden_layer_shape = c('none', 'funnel', 'log.funnel','block', 'bulge'),
-                                         hidden_layer_depth = 5,
-                                         node_count_scaling_factor = 1.1,
-                                         layer_override = NA) {
-  
-  if(!is.na(layer_override)) {
-    
-    return(layer_override)
-    
-  }
-  
-  if(hidden_layer_shape == 'none') {
-    
-    return(0)
-    
-  } else {
-    
-    init <- rep_len(1, length.out = hidden_layer_depth) %>% 
-      as_tibble() %>% 
-      mutate(pos = row_number()) %>% 
-      arrange(-pos) %>%
-      mutate(pos_2 = row_number()) %>%
-      mutate(value_funnel = ((value * pos) / hidden_layer_depth) * (n_features * node_count_scaling_factor),
-             value_log.funnel = ((value * exp(pos)) / hidden_layer_depth) * (n_features * node_count_scaling_factor),
-             value_log.funnel = value_log.funnel / max(value_log.funnel) * (n_features * node_count_scaling_factor),
-             value_block = n_features * node_count_scaling_factor,
-             value_bulge = pos^pos_2,
-             value_bulge = value_bulge / max(value_bulge) * (n_features * node_count_scaling_factor)) %>%
-      mutate(across(matches('value'), ceiling))
-    
-  }
-  
-  out <- init %>% dplyr::select(matches(paste0('_',hidden_layer_shape[1]))) %>% .[[1]]
-  
-  return(out)
-  
-}
-
-
-evaluate_test_set.nnet <- function(nnet_model, 
-                                   target_data, 
-                                   response_var,
-                                   id_vars,
-                                   response_type = c('regression', 'classification'),
-                                   include_geodesic = T) {
-  
-  if(response_type[1] == 'classification') {
-    
-    fitted <- predict(object = nnet_model, newdata = target_data) %>% as_tibble()
-    names(fitted) <- unique(arrange(target_data[response_var]))[[response_var]] %>% as.character()
-    
-    predict_data <- target_data %>% 
-      dplyr::select(all_of(c(response_var, id_vars))) %>%
-      bind_cols(fitted)
-    
-    predict_data <- probabilities_to_classes(probability_table = predict_data,
-                                             response_var = response_var,
-                                             id_vars = id_vars)
-    
-    
-    predict_data_summary <- predict_data %>% summarise(mean_class_error = mean(class_error))
-    
-  } else {
-    
-    fitted <- predict(object = nnet_model, newdata = target_data) %>% as_tibble() %>% mutate(across(matches('V'), ~round(x = .x, digits = 3)))
-    names(fitted) <- paste0(response_var,'_fitted')
-    if(include_geodesic) {
-      
-      geodesic_error_distance <- geodist(x = target_data %>% dplyr::select(response_var),
-                                         y = fitted,
-                                         paired = TRUE,
-                                         measure =  "geodesic")
-      
-    } else {
-      
-      geodesic_error_distance <- NA
-      
-    }
-    
-    
-    predict_data <- target_data %>% 
-      dplyr::select(all_of(c(id_vars, response_var))) %>%
-      bind_cols(fitted) %>%
-      mutate(latitude_error = latitude_fitted - latitude,
-             latitude_error_abs = abs(latitude_error),
-             longitude_error = longitude_fitted - longitude,
-             longitude_error_abs = abs(longitude_error),
-             geodesic_error_distance_km = ifelse(include_geodesic, round(geodesic_error_distance/1000, 0), NA)
-      )
-    
-    if(include_geodesic == F) predict_data <- predict_data %>% dplyr::select(-geodesic_error_distance_km)
-    
-    predict_data_summary <- predict_data %>% summarise(across(matches('error'), list(mean = mean, sd = sd)))
-    
-  }
-  
-  out <- list(predict_data = predict_data,
-              predict_data_summary = predict_data_summary)
   
   return(out)
   
