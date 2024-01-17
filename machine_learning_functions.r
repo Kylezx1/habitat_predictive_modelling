@@ -35,7 +35,31 @@ library(openssl)
 # Functions ====
 # ..... Generic ====
 
-# Function to interleave colors
+apply_qa_assurance_to_dataframe <- function(dataframe, 
+                                            exception_cols = NULL,
+                                            clean_col_names = T)  {
+  
+  out <- dataframe %>%
+    mutate(across(-any_of(exception_cols), .fns = as.character)) %>%
+    mutate(across(-any_of(exception_cols), to_snake_case)) %>%
+    mutate(across(-any_of(exception_cols), .fns = ~str_replace(.x, pattern = '^[[:space:]]*$', replacement = '..missing'))) %>%
+    mutate(across(-any_of(exception_cols), .fns = ~ifelse(is.na(.x), '..missing', .x))) %>%
+    mutate(across(-any_of(exception_cols), .fns = ~ifelse(.x == '..missing', NA, .x))) %>%
+    mutate(across(-any_of(exception_cols), .fns = ~str_trim(.x)))
+  
+  if(clean_col_names) {
+    
+    names(out) <- names(out) %>% to_snake_case()
+    
+  }
+  
+  return(out)
+  
+}
+
+
+
+
 interleave_colors <- function(num_colors, num_splits,
                               begin = 0, end = 1) {
   library(viridis)
@@ -222,6 +246,7 @@ set_up_model_data <- function(input_data,
                               response_var,
                               features,
                               id_vars,
+                              features.one_hot = NA,
                               replicate_unit_var = 'sample_id',
                               train_test_split_type = 'partition',
                               train_watchlist_split_type = 'partition',
@@ -240,12 +265,60 @@ set_up_model_data <- function(input_data,
   
   
   # Filter data
-  model_data_2 <- input_data %>% dplyr::select(c(response_var, replicate_unit_var, id_vars, features) %>% na.omit())
+  model_data_2 <- input_data %>% 
+    dplyr::select(any_of(c(response_var, 
+                           replicate_unit_var, 
+                           id_vars, 
+                           features)) %>% 
+                    na.omit())
   
   
   # Convert response to factor 
   if(response_type[1] == 'classification') {
-    model_data_2 <- model_data_2 %>% mutate(across(response_var, factor))
+    model_data_2 <- model_data_2 %>% 
+      mutate(across(response_var, factor))
+  }
+  
+  
+  # One hot encode features
+  if(!is.na(features.one_hot[1])) {
+    
+    model_data_3 <- lapply(1:length(features.one_hot), function(x) {
+
+      feature <- features.one_hot[x]
+      
+      model_data_3 <- model_data_2 %>% 
+        select(any_of(c(id_vars, feature))) %>%
+        mutate(row_id = row_number()) %>%
+        mutate(PLACEHOLDER = 1) %>%
+        pivot_wider(names_from = feature,
+                    values_from = PLACEHOLDER,
+                    values_fill = 0,
+                    names_glue = "TEMP_{.name}"
+        )
+      
+      names(model_data_3) <- str_replace(names(model_data_3), 
+                                         pattern = 'TEMP',
+                                         replacement = feature)
+      
+      model_data_3
+      
+    }) %>% reduce(left_join)
+      
+    model_data_2 <- model_data_2 %>%
+      mutate(row_id = row_number()) %>%
+      select(-features.one_hot) %>%
+      left_join(model_data_3) %>%
+      select(-row_id)
+    
+    
+    features.one_hot.encoded <- model_data_2 %>%
+      select(matches(paste(features.one_hot, collapse = '|'))) %>%
+      names()
+    
+    features <- features[-which(features %in% features.one_hot)]
+    features <- c(features, features.one_hot.encoded)
+    
   }
   
   
@@ -291,6 +364,7 @@ set_up_model_data <- function(input_data,
   
   out <- lapply(out, ungroup)
   
+  out[['features']] <- features 
   
   # Print final dataset sizes
   if(print_dataset_sizes) { lapply(out, function(x) { x[[response_var]] %>% table()}) }
@@ -423,12 +497,13 @@ generate_wrapper_function <- function(function_args_alist,
 create_xgb_matrix <- function(model_dataframe, 
                               features,
                               response_var, 
-                              response_type = c('classification', 'regression')) {
+                              response_type = c('classification', 'regression'),
+                              missing = NA) {
   
   if(nrow(model_dataframe) == 0) { return() }
   
   xgb_features <- model_dataframe %>% 
-    dplyr::select(all_of(features)) %>% 
+    dplyr::select(any_of(features)) %>% 
     as.matrix()
   
   xgb_labels <- model_dataframe %>% 
@@ -438,19 +513,20 @@ create_xgb_matrix <- function(model_dataframe,
   
   if(response_type[1] == 'classification') { xgb_labels <- as.numeric(factor(xgb_labels))-1 }
   
-  out <- xgb.DMatrix(data = xgb_features, label = xgb_labels)
+  out <- xgb.DMatrix(data = xgb_features, label = xgb_labels, missing = missing)
   
   return(out)
 }
 
 
-convert_data_to_xgb_matrix <- function(xgb_data_list, features, response_var, response_type = 'classification') {
+convert_data_to_xgb_matrix <- function(xgb_data_list, features, response_var, response_type = 'classification', missing = NA) {
   
   out <- lapply(xgb_data_list,  # for each thing in this list
                 create_xgb_matrix,  # do this
                 response_var = response_var,
                 response_type = response_type,
-                features = features)  # extra arguments to the above function
+                features = features,
+                missing = missing)  # extra arguments to the above function
   
   return(out)
   
@@ -923,6 +999,7 @@ xgboost_model_training_wrapper <-
                                                         id_vars=,
                                                         threshold=,
                                                         replicate_unit_var = replicate_unit_var,
+                                                        features.one_hot = NA,
                                                         train_test_split_type = 'partition',
                                                         train_watchlist_split_type = 'partition',
                                                         response_type = 'classification',
@@ -951,6 +1028,7 @@ xgboost_model_training_wrapper <-
            id_vars = NA,
            features,
            response_type = c('classification', 'regression'),
+           features.one_hot,
            train_test_split_val = 0.2,
            train_watchlist_split_val = 0.3,
            
@@ -978,6 +1056,7 @@ xgboost_model_training_wrapper <-
                    replicate_unit_var = replicate_unit_var,
                    id_vars = id_vars,
                    features = features,
+                   features.one_hot = features.one_hot,
                    response_type = response_type,
                    train_test_split_val = train_test_split_val,
                    train_watchlist_split_val = train_watchlist_split_val
@@ -999,7 +1078,8 @@ xgboost_model_training_wrapper <-
     print('setting up model for xgboost')
     xgb_data_list <- function_with_dots(function_x = set_up_model_data, 
                                         dots = dots)
-    dots[['xgb_data_list']] <- xgb_data_list
+    dots[['xgb_data_list']] <- xgb_data_list[1:3]
+    dots[['features']] <- xgb_data_list$features
     
     
     print('generating xgboost matrices')
